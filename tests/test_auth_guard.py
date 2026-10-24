@@ -109,6 +109,27 @@ class TestIntegration:
         assert client.get("/v1/models").status_code == 401
         assert client.get("/v1/models", headers={"x-api-key": "alpha"}).status_code == 200
 
+    def test_wrong_key_rejected_everywhere(self, monkeypatch):
+        proxy = _load_proxy(monkeypatch, API_KEYS="alpha")
+        for path in ("/api/config", "/v1/models"):
+            assert _guard_status(proxy, path, {"x-api-key": "wrong"}) == 401
+            assert _guard_status(proxy, path, {"x-api-key": ""}) == 401
+            assert _guard_status(proxy, path, {"authorization": "Bearer wrong"}) == 401
+
+    def test_admin_page_key_wrapper_is_session_only_same_origin(self, monkeypatch):
+        """The admin page must not put the key in the URL or persistent
+        storage, and must only attach it to same-origin requests."""
+        proxy = _load_proxy(monkeypatch, API_KEYS="alpha")
+        body = proxy.ADMIN
+        # Wrapper present: prompts once, in-memory variable only.
+        assert "x-api-key" in body and "prompt(" in body
+        # No key ingestion from the URL, no persistent storage.
+        assert "location.search" not in body
+        assert "localStorage" not in body
+        assert "sessionStorage" not in body
+        # Header attached exclusively to same-origin requests.
+        assert ".origin===location.origin" in body
+
     def test_management_end_to_end_remote_client(self, monkeypatch):
         """Negative E2E as a remote client behind a same-host reverse proxy:
         the peer looks like a private IP, and /api must still 401 without a key."""

@@ -1703,12 +1703,25 @@ a{color:#7dd3fc}
 <div id="toast" class="toast"></div>
 <script>
 // API key handling: when the server has API_KEYS configured, /api calls
-// require the x-api-key header. The key comes from ?key= in the URL or
-// localStorage; on a 401 the page prompts once and retries. The key never
-// leaves this page except as a request header to this same server.
-var APIK=new URLSearchParams(location.search).get('key')||localStorage.getItem('ds_api_key')||'';
+// require the x-api-key header. The page asks for the key via prompt() the
+// first time a call is rejected and keeps it in page memory only - never in
+// the URL, never in any browser storage, and the header is attached
+// exclusively to same-origin requests, so the key cannot leak into history,
+// referrer or access logs, or to any other origin.
+var APIK='';
 var _fetch=window.fetch;
-window.fetch=function(u,o){o=o||{};o.headers=o.headers||{};if(APIK&&!o.headers['x-api-key'])o.headers['x-api-key']=APIK;return _fetch(u,o).then(function(r){if(r.status===401){APIK=prompt('API key:')||'';if(APIK){localStorage.setItem('ds_api_key',APIK);o.headers['x-api-key']=APIK;return _fetch(u,o)}}return r})};
+window.fetch=function(u,o){
+  var sameOrigin=new URL(u,location.href).origin===location.origin;
+  o=o||{};
+  if(sameOrigin&&APIK){o.headers=Object.assign({},o.headers);if(!o.headers['x-api-key'])o.headers['x-api-key']=APIK}
+  return _fetch(u,o).then(function(r){
+    if(r.status===401&&sameOrigin){
+      APIK=prompt('API key:')||'';
+      if(APIK){var o2=Object.assign({},o);o2.headers=Object.assign({},o.headers);o2.headers['x-api-key']=APIK;return _fetch(u,o2)}
+    }
+    return r;
+  });
+};
 function Q(id){return document.getElementById(id)}
 function switchTab(type){
 var ti={'phone':0,'email':1,'usage':2,'accounts':3};

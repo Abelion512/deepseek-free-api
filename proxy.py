@@ -67,6 +67,41 @@ def _vlog(msg: str):
     print(f"[Vision] {msg}", flush=True)
 PROXY_PORT = int(os.getenv("PROXY_PORT", "8000"))
 
+# Client-facing bind address. Defaults to loopback: the README documents local
+# usage (http://localhost:8000). Set PROXY_HOST=0.0.0.0 explicitly for LAN use.
+PROXY_HOST = os.getenv("PROXY_HOST", "127.0.0.1")
+
+# Comma-separated client API keys for /v1 endpoints (x-api-key or
+# "Authorization: Bearer", as the README's API examples document).
+# Empty = local-only mode with no client authentication.
+API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _is_loopback(host: str) -> bool:
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _client_key(request: "Request") -> str:
+    key = request.headers.get("x-api-key", "").strip()
+    if not key:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            key = auth[7:].strip()
+    return key
+
+
+def _validate_bind(host: str) -> None:
+    """Fail closed: never bind beyond loopback without client authentication."""
+    if not _is_loopback(host) and not API_KEYS:
+        print(
+            "Refusing to start: PROXY_HOST is non-loopback (%r) but API_KEYS is not set.\n"
+            "Set API_KEYS (comma-separated) for client authentication, "
+            "or keep PROXY_HOST=127.0.0.1." % host
+        )
+        raise SystemExit(2)
+
 
 def _gen_response_id() -> str:
     return f"resp_{uuid.uuid4().hex}"
@@ -1477,6 +1512,38 @@ def build_config(parsed: dict) -> dict:
 
 
 app = FastAPI(title="DeepSeek Proxy")
+
+
+@app.middleware("http")
+async def client_auth_guard(request: Request, call_next):
+    """Client authentication guard (active only when API_KEYS is configured).
+
+    - /v1/* (the documented client API surface) requires x-api-key or
+      "Authorization: Bearer" matching one of API_KEYS.
+    - Management endpoints (/admin, /api/*, ...) stay loopback-only whenever
+      API_KEYS is configured: they are browser tools with no way to send
+      credentials, so remote access is denied instead.
+    - /health stays public for monitors.
+    """
+    if not API_KEYS:
+        return await call_next(request)
+    path = request.url.path
+    if path == "/health":
+        return await call_next(request)
+    if path.startswith("/v1/"):
+        if _client_key(request) not in API_KEYS:
+            return JSONResponse(
+                {"error": {"message": "Invalid or missing API key", "type": "auth_error", "code": 401}},
+                status_code=401,
+            )
+    else:
+        client_host = request.client.host if request.client else ""
+        if not _is_loopback(client_host):
+            return JSONResponse(
+                {"error": "Management endpoints are only reachable from localhost", "code": 403},
+                status_code=403,
+            )
+    return await call_next(request)
 from app.anthropic_routes import router as _anthropic_router
 app.include_router(_anthropic_router)
 
@@ -4251,4 +4318,5 @@ if __name__ == "__main__":
     anthropic_init_batch_storage(_anthropic_os.path.join(_anthropic_os.path.dirname(_anthropic_os.path.abspath(__file__)), ".anthropic_batches"))
     print(f" Anthropic: /v1/messages, /v1/messages/count_tokens, /v1/messages/batches, /v1/messages/{{id}}")
     print(f"DeepSeek Proxy\n Admin: http://localhost:{PROXY_PORT}/admin\n API: http://localhost:{PROXY_PORT}/v1")
-    uvicorn.run(app, host="0.0.0.0", port=PROXY_PORT, log_level="info")
+    _validate_bind(PROXY_HOST)
+    uvicorn.run(app, host=PROXY_HOST, port=PROXY_PORT, log_level="info")

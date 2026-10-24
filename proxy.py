@@ -1518,30 +1518,21 @@ app = FastAPI(title="DeepSeek Proxy")
 async def client_auth_guard(request: Request, call_next):
     """Client authentication guard (active only when API_KEYS is configured).
 
-    - /v1/* (the documented client API surface) requires x-api-key or
-      "Authorization: Bearer" matching one of API_KEYS.
-    - Management endpoints (/admin, /api/*, ...) stay loopback-only whenever
-      API_KEYS is configured: they are browser tools with no way to send
-      credentials, so remote access is denied instead.
-    - /health stays public for monitors.
+    Uniform contract, independent of client IP (safe behind reverse proxies,
+    where every peer looks like 127.0.0.1):
+    - /v1/* and /api/* require x-api-key or "Authorization: Bearer" matching
+      one of API_KEYS (as the README's API examples document).
+    - /, /admin (the static form) and /health stay public; the admin page
+      prompts for the key once and sends it as x-api-key on its API calls.
     """
     if not API_KEYS:
         return await call_next(request)
     path = request.url.path
-    if path == "/health":
-        return await call_next(request)
-    if path.startswith("/v1/"):
+    if path.startswith("/v1/") or path.startswith("/api/"):
         if _client_key(request) not in API_KEYS:
             return JSONResponse(
                 {"error": {"message": "Invalid or missing API key", "type": "auth_error", "code": 401}},
                 status_code=401,
-            )
-    else:
-        client_host = request.client.host if request.client else ""
-        if not _is_loopback(client_host):
-            return JSONResponse(
-                {"error": "Management endpoints are only reachable from localhost", "code": 403},
-                status_code=403,
             )
     return await call_next(request)
 from app.anthropic_routes import router as _anthropic_router
@@ -1711,6 +1702,13 @@ a{color:#7dd3fc}
 </div>
 <div id="toast" class="toast"></div>
 <script>
+// API key handling: when the server has API_KEYS configured, /api calls
+// require the x-api-key header. The key comes from ?key= in the URL or
+// localStorage; on a 401 the page prompts once and retries. The key never
+// leaves this page except as a request header to this same server.
+var APIK=new URLSearchParams(location.search).get('key')||localStorage.getItem('ds_api_key')||'';
+var _fetch=window.fetch;
+window.fetch=function(u,o){o=o||{};o.headers=o.headers||{};if(APIK&&!o.headers['x-api-key'])o.headers['x-api-key']=APIK;return _fetch(u,o).then(function(r){if(r.status===401){APIK=prompt('API key:')||'';if(APIK){localStorage.setItem('ds_api_key',APIK);o.headers['x-api-key']=APIK;return _fetch(u,o)}}return r})};
 function Q(id){return document.getElementById(id)}
 function switchTab(type){
 var ti={'phone':0,'email':1,'usage':2,'accounts':3};

@@ -82,14 +82,16 @@ class TestClientAuthGuard:
         assert _guard_status(proxy, "/v1/models", {"x-api-key": "alpha"}) == 200
         assert _guard_status(proxy, "/v1/chat/completions", {"Authorization": "Bearer beta"}) == 200
 
-    def test_management_loopback_only_when_keys_configured(self, monkeypatch):
+    def test_management_requires_key_regardless_of_client_ip(self, monkeypatch):
+        # Uniform contract: client IP is never trusted (reverse-proxy safe).
         proxy = _load_proxy(monkeypatch, API_KEYS="alpha")
-        # Loopback management traffic keeps working (admin browser UX).
-        assert _guard_status(proxy, "/admin", client=("127.0.0.1", 5000)) == 200
-        assert _guard_status(proxy, "/api/config", client=("::1", 5000)) == 200
-        # Remote management traffic is denied even with no /v1 involved.
-        assert _guard_status(proxy, "/admin", client=("10.0.0.5", 5000)) == 403
-        assert _guard_status(proxy, "/api/config", client=("10.0.0.5", 5000)) == 403
+        for client in (("127.0.0.1", 5000), ("10.0.0.5", 5000)):
+            # /api/* without a key: denied from ANY peer, loopback included.
+            assert _guard_status(proxy, "/api/config", client=client) == 401
+            # /api/* with a valid key: allowed from any peer.
+            assert _guard_status(proxy, "/api/config", {"x-api-key": "alpha"}, client) == 200
+            # The static admin form itself stays public (it prompts for the key).
+            assert _guard_status(proxy, "/admin", client=client) == 200
 
     def test_health_stays_public(self, monkeypatch):
         proxy = _load_proxy(monkeypatch, API_KEYS="alpha")
@@ -106,3 +108,15 @@ class TestIntegration:
         client = TestClient(proxy.app)
         assert client.get("/v1/models").status_code == 401
         assert client.get("/v1/models", headers={"x-api-key": "alpha"}).status_code == 200
+
+    def test_management_end_to_end_remote_client(self, monkeypatch):
+        """Negative E2E as a remote client behind a same-host reverse proxy:
+        the peer looks like a private IP, and /api must still 401 without a key."""
+        pytest.importorskip("httpx")
+        from fastapi.testclient import TestClient
+        proxy = _load_proxy(monkeypatch, API_KEYS="alpha")
+        remote = TestClient(proxy.app, client=("10.0.0.5", 5000))
+        assert remote.get("/api/config").status_code == 401
+        assert remote.get("/api/config", headers={"x-api-key": "alpha"}).status_code == 200
+        assert remote.get("/admin").status_code == 200  # static form stays public
+        assert remote.get("/health").status_code == 200

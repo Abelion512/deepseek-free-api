@@ -24,6 +24,10 @@ Fixes #
 
 ![flow](docs/assets/a2a-task-flow.svg)
 
+## How it works
+
+<!-- Required. Attach a real image: a screenshot of the result, or a small diagram of how this change works. For config or docs changes, a small accurate diagram of what changes is enough. Do not paste a Mermaid block. Keep the editable source in the repo (for example docs/flows/) so the next person can regenerate the image. -->
+
 ## Infographic (always)
 
 <!-- Every PR carries a picture a reviewer can look at without running anything:
